@@ -67,7 +67,40 @@ export default function ComplaintWizard({ onBack }) {
           form.setFieldsValue(parsed);
         } catch { localStorage.removeItem('complaint_formData'); }
       } else if (extractedData) {
-        form.setFieldsValue(extractedData);
+        const parsedExtracted = { ...extractedData };
+        
+        const parseDateSafely = (dateStr) => {
+          if (!dateStr || dateStr === "Unknown" || String(dateStr).trim() === "") return null;
+          // Clean up the string
+          const cleanStr = String(dateStr).trim();
+          
+          // Try standard parse first (for YYYY-MM-DD)
+          let d = dayjs(cleanStr);
+          if (d.isValid()) return d;
+          
+          // Try DD/MM/YYYY or DD-MM-YYYY
+          const parts = cleanStr.split(/[-/.]/);
+          if (parts.length === 3) {
+            // If year is last
+            if (parts[2].length === 4) {
+              d = dayjs(`${parts[2]}-${parts[1]}-${parts[0]}`);
+              if (d.isValid()) return d;
+            }
+          }
+          return null;
+        };
+
+        parsedExtracted.dateOfIncident = parseDateSafely(parsedExtracted.dateOfIncident);
+        parsedExtracted.dateOfComplaint = parseDateSafely(parsedExtracted.dateOfComplaint);
+        
+        if (parsedExtracted.timeOfIncident && parsedExtracted.timeOfIncident !== "Unknown") {
+          parsedExtracted.timeOfIncident = dayjs(parsedExtracted.timeOfIncident, 'HH:mm:ss');
+          if (!parsedExtracted.timeOfIncident.isValid()) parsedExtracted.timeOfIncident = null;
+        } else {
+          parsedExtracted.timeOfIncident = null;
+        }
+        
+        form.setFieldsValue(parsedExtracted);
       }
     }
   }, [currentStep, extractedData, form]);
@@ -135,8 +168,8 @@ export default function ComplaintWizard({ onBack }) {
     const pdf = await loadingTask.promise;
     const images = [];
     
-    // Read up to 3 pages maximum to prevent API payload limits
-    const numPagesToRead = Math.min(pdf.numPages, 3);
+    // Read up to 4 pages maximum to capture both the starting content and the ending signatures/dates
+    const numPagesToRead = Math.min(pdf.numPages, 4);
     for (let i = 1; i <= numPagesToRead; i++) {
         const page = await pdf.getPage(i);
         const viewport = page.getViewport({ scale: 1.5 }); // Hi-Res
@@ -179,12 +212,11 @@ export default function ComplaintWizard({ onBack }) {
         message.loading({ content: 'Extracting text from PDF...', key: 'ai-process', className: 'dark-loading-message' });
         textToProcess = await extractTextFromPDF(uploadedFile);
         
-        // Only use vision (image) fallback if text extraction yields too little content
-        // (e.g. Kruti Dev / scanned PDFs with no embedded text)
-        if (!textToProcess || textToProcess.replace(/\s/g, '').length < 50) {
-          message.loading({ content: 'Text extraction failed, switching to Vision AI...', key: 'ai-process', className: 'dark-loading-message' });
-          visionImages = await convertPdfToImages(uploadedFile);
-        }
+        // ALWAYS use vision (image) fallback alongside text for PDFs.
+        // Reason: Hand-written dates, signatures, and mobile numbers at the bottom 
+        // of scanned/printed PDFs are often embedded as images and missed by pdfjs text extraction.
+        message.loading({ content: 'Preparing document images for AI...', key: 'ai-process', className: 'dark-loading-message' });
+        visionImages = await convertPdfToImages(uploadedFile);
       } catch (err) {
         console.error("PDF Parsing Error:", err);
         message.error({ content: `Failed to read PDF file: ${err.message}`, key: 'ai-process' });
@@ -305,6 +337,7 @@ You are extracting facts, not creating content. If you run this extraction 10 ti
 [2] COMPLAINANT NAME AND GENDER
 - firstName = ONLY the complainant's first/given name as written.
 - lastName = ONLY a hereditary caste/family surname (like Sharma, Singh, Yadav, Gupta, Verma, Jat, etc.).
+- IMPORTANT SIGNATURE CLUES: Look for keywords like "प्रार्थी" (Prarthi), "प्रार्थिया" (Prarthiya), "निवेदक" (Nivedak), "Applicant", or "Complainant" usually at the bottom or top of the document. The name written near these words is the complainant's name.
 - STRICT RULE: The following are RELATION words, NOT surnames. If any of these appear after the complainant's name, set lastName = "" (empty string):
   Patni, Patnee, पत्नी (= wife of)
   Putra, पुत्र (= son of)
@@ -320,10 +353,13 @@ You are extracting facts, not creating content. If you run this extraction 10 ti
   "Amit Sharma" → firstName="Amit", lastName="Sharma" – Sharma is a valid caste surname
 - If name is only one word: firstName = that word, lastName = ""
 - Extract ONLY the COMPLAINANT's name. Never the accused, witness, or officer.
-- Gender: if Patni/W/O/Wife of/female relation word present → gender = "Female" strictly.
+- Gender: if Patni/W/O/Wife of/female relation word present or the word "प्रार्थिया" (Prarthiya - female applicant) is used → gender = "Female" strictly.
 
 [3] MOBILE NUMBER
-- Extract the complainant's 10-digit mobile number. Strip +91 or leading 0 if present.
+- Extract the complainant's mobile number(s). Look for Hindi/English labels like "मो.न.", "Mob", "Phone", "Contact".
+- EXTREMELY IMPORTANT: Ensure the mobile number belongs to the COMPLAINANT (the person identified near "प्रार्थी", "प्रार्थिया", "निवेदक"). Do NOT extract the accused's or a witness's phone number.
+- If multiple numbers are provided (e.g. 9050763699, 8199934822), extract ALL of them and join them with a comma (e.g. "9050763699, 8199934822").
+- Strip +91 or leading 0 if present.
 - If not present: return empty string "".
 
 [4] ACCUSED LIST — THIS IS THE MOST CRITICAL SECTION
@@ -345,7 +381,9 @@ ACCUSED NAME RULES — NO HALLUCINATION ALLOWED:
 - If accused identity is completely unknown: write "Unknown".
 
 ACCUSED ADDRESS RULES:
-- Write the accused's address exactly as mentioned in the document. If not mentioned, write "Unknown".
+- Write the accused's address exactly as mentioned in the document.
+- If the address is NOT explicitly mentioned, return an empty string "". 
+- NEVER write placeholder text like "Unknown", "Accused Address", "Not mentioned", etc.
 
 TYPE OF ACCUSED (typeOfAccused) — Use EXACT enum value:
 - Determine who the complaint is filed AGAINST. Choose the single best matching value:
@@ -362,7 +400,10 @@ TYPE OF ACCUSED (typeOfAccused) — Use EXACT enum value:
 [5] DATES AND TIME
 - dateOfIncident: Date the actual crime/incident occurred. Format YYYY-MM-DD. If unclear or missing return empty string "".
 - timeOfIncident: Time of incident in 24-hour format "HH:MM:00". If not mentioned return "".
-- dateOfComplaint: Date complaint was written or submitted. Format YYYY-MM-DD. Default to today's date if missing.
+- dateOfComplaint: Date the complaint was written or submitted by the COMPLAINANT. Format YYYY-MM-DD.
+  * EXTREMELY IMPORTANT: Look for Hindi words like "दिनांक", "दिनांक:-", or English "Date", "Dated" usually written by the complainant at the end/bottom or top of the document.
+  * Extract that exact date (e.g. 19/12/2025 -> "2025-12-19").
+  * NEVER hallucinate or guess a date. If there is NO date explicitly written by the complainant on the document, default to today's date ONLY as a last resort.
 - NEVER invent or guess dates. Extract only what is explicitly written in the document.
 
 [6] ID PROOF
@@ -443,8 +484,8 @@ Extracted Text from document (may be garbled for scanned or Hindi-font PDFs, cro
 ${textToProcess}
       `;
 
-      // Limit vision images to max 2 pages to prevent oversized payloads
-      const limitedImages = visionImages ? visionImages.slice(0, 2) : null;
+      // Limit vision images to max 4 pages to capture the full context including ending signatures
+      const limitedImages = visionImages ? visionImages.slice(0, 4) : null;
 
       const requestPayload = {
         model: limitedImages ? "meta-llama/llama-4-scout-17b-16e-instruct" : "meta-llama/llama-4-maverick-17b-128e-instruct",
@@ -608,6 +649,25 @@ ${textToProcess}
     const complaintId = 'C' + Math.floor(10000 + Math.random() * 90000);
     const now = new Date();
 
+    // Extract evidence metadata to show in View mode
+    const mainEvidence = uploadedFile ? {
+      name: uploadedFile.name,
+      type: uploadedFile.type,
+      size: uploadedFile.size,
+      isMain: true
+    } : null;
+
+    const extraEvidences = supportingDocs.map(f => ({
+      name: f.name,
+      type: f.type,
+      size: f.size,
+      isMain: false
+    }));
+
+    const evidences = [];
+    if (mainEvidence) evidences.push(mainEvidence);
+    if (extraEvidences.length > 0) evidences.push(...extraEvidences);
+
     // Build the complaint record to save
     const complaintRecord = {
       ...values,
@@ -616,6 +676,7 @@ ${textToProcess}
       dateRegistered: now.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
       status: 'Registered',
       appliedTemplate: null,
+      evidences: evidences.length > 0 ? evidences : null
     };
 
     existing.unshift(complaintRecord); // newest first

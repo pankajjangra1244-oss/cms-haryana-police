@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { Table, Input, Button, Typography, Tag, Modal, Card, Row, Col, Divider, Badge } from 'antd';
-import { SearchOutlined, EyeOutlined, UserOutlined, EnvironmentOutlined, SafetyOutlined, FileTextOutlined, TeamOutlined, InfoCircleOutlined, ArrowLeftOutlined } from '@ant-design/icons';
+import { SearchOutlined, EyeOutlined, UserOutlined, EnvironmentOutlined, SafetyOutlined, FileTextOutlined, TeamOutlined, InfoCircleOutlined, ArrowLeftOutlined, PaperClipOutlined, FilePdfOutlined, AudioOutlined, PictureOutlined, FileOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useAuth } from '../../hooks/useAuth';
 
@@ -216,6 +216,58 @@ function ComplaintDetailView({ record }) {
             whiteSpace: 'pre-wrap',
           }}>
             {d.descriptionOfComplaint}
+          </div>
+        </Card>
+      )}
+      {/* 8. Evidences / Documents */}
+      {d.evidences && d.evidences.filter(ev => !ev.isMain).length > 0 && (
+        <Card {...sectionCard(<PaperClipOutlined />, 'Evidences / Attached Documents', '#08979c')}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {d.evidences.filter(ev => !ev.isMain).map((ev, idx) => {
+              const getIcon = (type) => {
+                if (type.includes('pdf')) return <FilePdfOutlined style={{ color: '#ff4d4f', fontSize: '20px' }} />;
+                if (type.includes('audio') || type.includes('voice')) return <AudioOutlined style={{ color: '#52c41a', fontSize: '20px' }} />;
+                if (type.includes('image')) return <PictureOutlined style={{ color: '#1890ff', fontSize: '20px' }} />;
+                return <FileOutlined style={{ color: '#d9d9d9', fontSize: '20px' }} />;
+              };
+              
+              return (
+                <div key={idx} style={{
+                  background: 'rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  borderRadius: '8px',
+                  padding: '12px 16px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '16px'
+                }}>
+                  <div style={{
+                    width: '40px', height: '40px', borderRadius: '8px',
+                    background: 'rgba(0,0,0,0.2)', display: 'flex',
+                    alignItems: 'center', justifyContent: 'center'
+                  }}>
+                    {getIcon(ev.type || '')}
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ color: '#e8eaf0', fontSize: '14px', fontWeight: 500 }}>
+                      {ev.name || `Document ${idx + 1}`}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#8c9ab5', marginTop: '4px' }}>
+                      {ev.type || 'Unknown Type'} • {ev.size ? (ev.size / 1024).toFixed(1) + ' KB' : 'Unknown Size'}
+                    </div>
+                  </div>
+                  <Button 
+                    type="primary" 
+                    ghost 
+                    size="small" 
+                    icon={<EyeOutlined />}
+                    onClick={() => message.info(`Cannot preview ${ev.name}. Backend storage is required to view uploaded files.`)}
+                  >
+                    View
+                  </Button>
+                </div>
+              );
+            })}
           </div>
         </Card>
       )}
